@@ -1,0 +1,848 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jetson Xavier NX Remote Access — x11vnc + Tailscale Guide</title>
+<meta name="description" content="Copy-paste guide to remotely access an NVIDIA Jetson Xavier NX terminal and Ubuntu desktop from anywhere using x11vnc and Tailscale. Windows, macOS and Ubuntu client steps plus deep troubleshooting." />
+<meta name="author" content="Om Rashiya" />
+<meta property="og:title" content="Jetson Xavier NX Remote Access — x11vnc + Tailscale" />
+<meta property="og:description" content="A copy-paste, zero-guesswork field guide: SSH + full Ubuntu desktop over Tailscale, from any network, on Windows / macOS / Ubuntu." />
+<meta property="og:type" content="article" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div id="progress"></div>
+<div class="toast" id="toast"></div>
+
+<!-- ============ TOP BAR ============ -->
+<header class="topbar">
+  <div class="wrap row">
+    <a class="brand" href="#top" style="text-decoration:none">
+      <span class="mark">OR</span>
+      <span>Rashiya&nbsp;Om<small class="micro">Field guide / 01</small></span>
+    </a>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#steps">Steps</a>
+      <a href="#clients">VNC clients</a>
+      <a href="#perf">Performance</a>
+      <a href="#trouble">Troubleshooting</a>
+      <a href="#checklist">Checklist</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ============ HERO ============ -->
+<main id="top">
+<div class="wrap hero">
+  <div class="kicker">
+    <div class="micro">How remote<br />access works</div>
+    <div class="micro" style="text-align:right">A little guide<br />for jetson<br />owners</div>
+  </div>
+
+  <h1>Reach your Jetson<br />from anywhere.<br /><em>Terminal + full desktop.</em></h1>
+  <p class="lede">
+    A permanently-installed <strong>NVIDIA Jetson Xavier NX 8GB</strong> sitting on college Ethernet,
+    reachable from a hostel room with nothing but a phone hotspot — using only free, open-source pieces:
+    <strong>OpenSSH</strong> for the shell, <strong>x11vnc</strong> for the existing GNOME/X11 desktop and
+    <strong>Tailscale</strong> as the private encrypted road between them. Every command below is copy-paste ready.
+    No NoMachine. No paid licence. No public port forwarding.
+  </p>
+
+  <div class="pills">
+    <span class="pill ok">Free &amp; open source</span>
+    <span class="pill">Ubuntu 20.04.6 · aarch64</span>
+    <span class="pill">JetPack / CUDA / ROS 2 untouched</span>
+    <span class="pill">Tailscale-only exposure</span>
+    <span class="pill">Windows · macOS · Ubuntu clients</span>
+    <span class="pill">Survives reboot</span>
+  </div>
+
+  <figure class="hero-media">
+    <img src="../images/jetson.jpg" alt="NVIDIA Jetson developer board with heatsink, fan and Ethernet cable connected on a desk" width="1280" height="864" />
+    <figcaption class="micro">The permanent node — Jetson Xavier NX, powered 24/7, wired to college Ethernet.</figcaption>
+  </figure>
+</div>
+
+<!-- ============ HOW IT WORKS ============ -->
+<section id="how">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="micro">00 — Mental model</div>
+        <h2>Three layers. Never mix them up.</h2>
+        <p>Most remote-access confusion comes from blending networking with display. Keep these separate and every error message below becomes obvious.</p>
+      </div>
+    </div>
+
+    <div class="grid g3">
+      <div class="card">
+        <div class="num">Layer 1</div>
+        <h3>Physical network</h3>
+        <p>Jetson: college Ethernet (private LAN IP such as <code>172.16.97.203</code>, which may change).
+        Laptop: phone 4G/5G hotspot. Two totally different networks — neither can see the other directly.</p>
+      </div>
+      <div class="card">
+        <div class="num">Layer 2</div>
+        <h3>Tailscale — the private road</h3>
+        <p>A WireGuard mesh gives each device a stable <code>100.x.y.z</code> address. Jetson <code>100.122.162.74</code>,
+        Mac <code>100.83.106.10</code>. These never change when the LAN IP changes. Tailscale does <em>not</em> draw a desktop.</p>
+      </div>
+      <div class="card">
+        <div class="num">Layer 3</div>
+        <h3>Applications — the doors</h3>
+        <p><strong>SSH</strong> = terminal door (port 22). <strong>x11vnc</strong> = graphical door (port 5900), attaching to the
+        <em>already running</em> Xorg + GNOME session. SSH cannot show a desktop; x11vnc cannot create Internet.</p>
+      </div>
+    </div>
+
+    <h4 class="micro" style="margin:38px 0 12px">Final architecture</h4>
+    <pre class="diagram">
+                              INTERNET
+                            /          \
+                           /            \
+                  Laptop (hostel)      College Ethernet
+                  Phone 4G/5G hotspot          |
+                          |                    |
+                          v                    v
+                      Laptop              Jetson Xavier NX
+                          |                    |
+                          +---- Tailscale -----+
+                             (encrypted mesh)
+                                     |
+                     +---------------+---------------+
+                     |                               |
+                    SSH :22                     x11vnc :5900
+                     |                               |
+                     v                               v
+                 Terminal shell            Existing Xorg display
+                                                    |
+                                              GNOME Shell
+                                                    |
+                                            Ubuntu desktop
+    </pre>
+
+    <div class="grid g2" style="margin-top:22px">
+      <figure class="photo">
+        <img loading="lazy" src="../images/network.jpg" alt="Ethernet patch cables plugged into a network switch in a rack with blue link LEDs" width="1280" height="864" />
+        <div class="cap micro">Layer 1 — the college uplink. Private IP, no inbound ports, no router access needed.</div>
+      </figure>
+      <figure class="photo">
+        <img loading="lazy" src="../images/hostel.jpg" alt="Laptop on a hostel desk at night showing a remote Linux session, phone beside it sharing a hotspot" width="1280" height="864" />
+        <div class="cap micro">Layer 3 — the hostel side. Phone hotspot, laptop, Tailscale, done.</div>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BEFORE YOU START ============ -->
+<section id="before">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="micro">00 — Ground rules</div>
+        <h2>Read this once, then never break it.</h2>
+      </div>
+    </div>
+    <div class="grid g3">
+      <div class="card"><div class="num">Rule 01</div><h3>Never re-flash or re-install</h3><p>JetPack, CUDA, cuDNN, Docker, ROS 2 Humble and the desktop stack all stay exactly as they are. Remote access is an added layer, not a rebuild.</p></div>
+      <div class="card"><div class="num">Rule 02</div><h3>Disk is tight — install narrow</h3><p>The eMMC root has roughly 2 GB free. Install <code>x11vnc</code> only, with <code>--no-install-recommends</code>. Never run a blind <code>full-upgrade</code>.</p></div>
+      <div class="card"><div class="num">Rule 03</div><h3>Discover, never guess</h3><p><code>DISPLAY=:0</code> is an assumption. The real display and <code>XAUTHORITY</code> are read out of the live session in Step 04.</p></div>
+      <div class="card"><div class="num">Rule 04</div><h3>Tailscale only</h3><p>VNC binds to the Tailscale interface. Port 5900 is never forwarded to the public Internet and never opened on the college LAN.</p></div>
+      <div class="card"><div class="num">Rule 05</div><h3>Broken cuDNN apt repo is expected</h3><p>The stale <code>file:/var/cudnn-local-tegra-repo-*</code> entry throws an error on every <code>apt update</code>. Step 05 works around it without touching NVIDIA repos.</p></div>
+      <div class="card"><div class="num">Rule 06</div><h3>SSH first, GUI second</h3><p>Code, Docker, ROS and monitoring over SSH. Reserve VNC for genuine graphical work like RViz2 or a file manager.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STEPS ============ -->
+<section id="steps">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="micro">Step by step</div>
+        <h2>Eleven steps. Copy, paste, verify.</h2>
+        <p>Each card tells you where to run the command, what to paste, and exactly what a healthy output looks like. Do not skip the verify blocks — they are how you avoid debugging blind later.</p>
+      </div>
+      <div class="micro">Legend<br />XAVIER = on the Jetson<br />CLIENT = on your laptop</div>
+    </div>
+
+    <!-- STEP 1 -->
+    <article class="step">
+      <span class="ghost">01</span>
+      <div class="step-head"><span class="tag">00 — 1 &nbsp;&nbsp; Step</span><h3>Confirm what is already running</h3></div>
+      <p>Log in on the Jetson (physically, or over SSH on the LAN) and take an honest inventory before changing anything. Run these one at a time.</p>
+
+      <h4>1a · Identity, architecture, kernel</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · terminal</span><button class="copy">Copy</button></div><pre>whoami; uname -m; uname -r; lsb_release -ds</pre></div>
+      <div class="expect"><b>Expected</b><code>xavier-nx</code> · <code>aarch64</code> · <code>5.10.216-tegra</code> · <code>Ubuntu 20.04.6 LTS</code></div>
+
+      <h4>1b · Disk headroom (must be &gt; 500 MB free on <code>/</code>)</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · terminal</span><button class="copy">Copy</button></div><pre>df -h / /mnt/ssd</pre></div>
+
+      <h4>1c · SSH server is up and listening on 22</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · terminal</span><button class="copy">Copy</button></div><pre>systemctl is-active ssh; sudo ss -tlnp | grep ':22'</pre></div>
+      <div class="expect"><b>Expected</b><code>active</code> plus listeners on <code>0.0.0.0:22</code> and <code>[::]:22</code>.</div>
+
+      <h4>1d · Tailscale is up, and note the 100.x address</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · terminal</span><button class="copy">Copy</button></div><pre>tailscale ip -4; tailscale status</pre></div>
+      <div class="code out"><div class="code-top"><span class="where">Sample output</span><button class="copy">Copy</button></div><pre>100.122.162.74
+100.122.162.74  ubuntu     rashiyaom@  linux   -
+100.83.106.10   rashiyaom  rashiyaom@  macOS   -</pre></div>
+
+      <h4>1e · The graphical session exists and is X11 (not Wayland)</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · terminal</span><button class="copy">Copy</button></div><pre>systemctl is-active gdm3; loginctl list-sessions</pre></div>
+      <div class="note">Write down the numeric session id whose <code>USER</code> is <code>xavier-nx</code> and whose <code>SEAT</code> is <code>seat0</code> (in the reference setup it was <code>2</code>). You need it in Step 04.</div>
+    </article>
+
+    <!-- STEP 2 -->
+    <article class="step">
+      <span class="ghost">02</span>
+      <div class="step-head"><span class="tag">00 — 2 &nbsp;&nbsp; Step</span><h3>Install the Tailscale client on your laptop</h3></div>
+      <p>The Jetson is already on the tailnet. Your laptop must join the <em>same</em> tailnet with the <em>same</em> login. Pick your operating system — the choice is remembered across the whole page.</p>
+
+      <div data-tabs>
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-target="mac" aria-selected="true">macOS</button>
+          <button class="tab" role="tab" data-target="win" aria-selected="false">Windows</button>
+          <button class="tab" role="tab" data-target="ubu" aria-selected="false">Ubuntu / Linux</button>
+        </div>
+
+        <div class="tabpanel" data-panel="mac">
+          <p>Install via Homebrew (or the Mac App Store build, either is fine).</p>
+          <div class="code"><div class="code-top"><span class="where">Client · macOS Terminal</span><button class="copy">Copy</button></div><pre>brew install --cask tailscale</pre></div>
+          <p>Launch Tailscale from Applications, sign in with the same account, then verify:</p>
+          <div class="code"><div class="code-top"><span class="where">Client · macOS Terminal</span><button class="copy">Copy</button></div><pre>/Applications/Tailscale.app/Contents/MacOS/Tailscale status</pre></div>
+        </div>
+
+        <div class="tabpanel" data-panel="win" hidden>
+          <p>Install with winget in an ordinary PowerShell window, then sign in from the tray icon.</p>
+          <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell</span><button class="copy">Copy</button></div><pre>winget install --id tailscale.tailscale -e</pre></div>
+          <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell</span><button class="copy">Copy</button></div><pre>tailscale status</pre></div>
+          <div class="note">If <code>tailscale</code> is not recognised, close and reopen PowerShell, or call it directly:
+          <code>&amp; "C:\Program Files\Tailscale\tailscale.exe" status</code></div>
+        </div>
+
+        <div class="tabpanel" data-panel="ubu" hidden>
+          <div class="code"><div class="code-top"><span class="where">Client · Ubuntu terminal</span><button class="copy">Copy</button></div><pre>curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+tailscale status</pre></div>
+        </div>
+      </div>
+
+      <div class="expect"><b>Expected</b>Both devices listed in <code>tailscale status</code>, the Jetson as <code>100.122.162.74</code>.</div>
+    </article>
+
+    <!-- STEP 3 -->
+    <article class="step">
+      <span class="ghost">03</span>
+      <div class="step-head"><span class="tag">00 — 3 &nbsp;&nbsp; Step</span><h3>Prove SSH works over Tailscale — twice</h3></div>
+      <p>Do this before touching x11vnc. If the terminal door does not open, the graphical door never will.</p>
+
+      <h4>3a · Reachability</h4>
+      <div class="code"><div class="code-top"><span class="where">Client · any OS</span><button class="copy">Copy</button></div><pre>tailscale ping 100.122.162.74</pre></div>
+      <div class="expect"><b>Expected</b><code>pong from ubuntu ... via DERP</code> or <code>via 172.16.x.x:41641</code> (direct is faster, DERP still works).</div>
+
+      <h4>3b · The actual login</h4>
+      <div class="code"><div class="code-top"><span class="where">Client · any OS</span><button class="copy">Copy</button></div><pre>ssh xavier-nx@100.122.162.74</pre></div>
+      <div class="expect"><b>Expected</b><code>Welcome to Ubuntu 20.04.6 LTS</code> then a prompt like <code>xavier-nx@ubuntu:~$</code>.
+      A harmless <code>/opt/ros/foxy/setup.bash: No such file or directory</code> line may also appear — ignore it for now, Step 11 cleans it.</div>
+
+      <h4>3c · A permanent shortcut, so you type one word forever</h4>
+      <div class="code"><div class="code-top"><span class="where">Client · macOS / Ubuntu</span><button class="copy">Copy</button></div><pre>mkdir -p ~/.ssh && cat >> ~/.ssh/config <<'EOF'
+
+Host xavier
+    HostName 100.122.162.74
+    User xavier-nx
+    ServerAliveInterval 30
+    ServerAliveCountMax 6
+EOF
+chmod 600 ~/.ssh/config</pre></div>
+      <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell (same file, Windows path)</span><button class="copy">Copy</button></div><pre>if (!(Test-Path "$HOME\.ssh")) { New-Item -ItemType Directory "$HOME\.ssh" | Out-Null }
+Add-Content "$HOME\.ssh\config" "`nHost xavier`n    HostName 100.122.162.74`n    User xavier-nx`n    ServerAliveInterval 30`n    ServerAliveCountMax 6"</pre></div>
+      <div class="code"><div class="code-top"><span class="where">Client · any OS</span><button class="copy">Copy</button></div><pre>ssh xavier</pre></div>
+
+      <h4>3d · Key-based login (no password prompts, required for the tunnel step)</h4>
+      <div class="code"><div class="code-top"><span class="where">Client · macOS / Ubuntu</span><button class="copy">Copy</button></div><pre>ssh-keygen -t ed25519 -C "laptop-to-xavier" -f ~/.ssh/id_ed25519 -N ""
+ssh-copy-id -i ~/.ssh/id_ed25519.pub xavier</pre></div>
+      <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell</span><button class="copy">Copy</button></div><pre>ssh-keygen -t ed25519 -C "laptop-to-xavier" -f "$HOME\.ssh\id_ed25519" -N '""'
+type "$HOME\.ssh\id_ed25519.pub" | ssh xavier "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"</pre></div>
+
+      <h4>3e · The real-world test</h4>
+      <ol>
+        <li>Disconnect the laptop from college Wi-Fi entirely.</li>
+        <li>Turn on the phone hotspot and join it.</li>
+        <li>Leave the Jetson exactly where it is, on college Ethernet.</li>
+        <li>Run <code>ssh xavier</code> again.</li>
+      </ol>
+      <div class="note warn">If this fails, stop here and fix networking first — see <a href="#trouble">Troubleshooting T1–T4</a>. Do not proceed to x11vnc.</div>
+    </article>
+
+    <!-- STEP 4 -->
+    <article class="step">
+      <span class="ghost">04</span>
+      <div class="step-head"><span class="tag">00 — 4 &nbsp;&nbsp; Step</span><h3>Discover the real DISPLAY and XAUTHORITY</h3></div>
+      <p>This is the step everyone gets wrong. <code>DISPLAY=:0</code> is a guess; on a GDM3 Jetson the user session frequently lives on a different display with a Xauthority file under <code>/run/user/1000/gdm/</code>. Read the truth out of the running system.</p>
+
+      <h4>4a · Which session is the real desktop?</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>loginctl list-sessions
+loginctl show-session 2 -p Id -p Name -p Type -p Display -p Seat -p State -p Active</pre></div>
+      <div class="note">Replace <code>2</code> with your session id from Step 1e. You want <code>Type=x11</code>, <code>State=active</code>, <code>Name=xavier-nx</code>.</div>
+
+      <h4>4b · Ask Xorg itself which display and auth file it uses</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>ps -eo pid,user,args | grep '[X]org'</pre></div>
+      <div class="code out"><div class="code-top"><span class="where">Sample output (yours will differ)</span><button class="copy">Copy</button></div><pre>  1543 root  /usr/lib/xorg/Xorg vt1 -displayfd 3 -auth /run/user/124/gdm/Xauthority ...
+  2187 root  /usr/lib/xorg/Xorg vt2 -displayfd 3 -auth /run/user/1000/gdm/Xauthority ...</pre></div>
+      <div class="note">The line whose auth path contains <code>/run/user/1000/</code> is <em>your</em> session (uid 1000 = <code>xavier-nx</code>). The other one, under <code>/run/user/124/</code>, is the GDM login screen — connecting to that only ever shows a greeter.</div>
+
+      <h4>4c · Print the exact values, machine-readable</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo ls -la /run/user/1000/ | grep -Ei 'gdm|X11|xauth'
+sudo ls -la /run/user/1000/gdm/
+ls /tmp/.X11-unix/</pre></div>
+      <div class="expect"><b>Expected</b><code>/run/user/1000/gdm/Xauthority</code> exists, and <code>/tmp/.X11-unix/</code> lists sockets such as <code>X0</code> and/or <code>X1</code>. A socket named <code>X1</code> means display <code>:1</code> exists.</div>
+
+      <h4>4d · Read DISPLAY straight from the live GNOME process (authoritative)</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>PID=$(pgrep -u xavier-nx -f 'gnome-shell$' | head -n1); echo "gnome-shell pid = $PID"
+sudo tr '\0' '\n' < /proc/$PID/environ | grep -E '^(DISPLAY|XAUTHORITY|XDG_SESSION_TYPE)='</pre></div>
+      <div class="code out"><div class="code-top"><span class="where">Sample output</span><button class="copy">Copy</button></div><pre>gnome-shell pid = 2456
+DISPLAY=:1
+XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.XXXXXX   # or /run/user/1000/gdm/Xauthority
+XDG_SESSION_TYPE=x11</pre></div>
+      <div class="note warn">Copy those two exact strings somewhere. Everywhere below that says <code>:1</code> or <code>/run/user/1000/gdm/Xauthority</code>, substitute <em>your</em> values. Nothing else in this guide requires guessing.</div>
+
+      <h4>4e · Prove the pair actually works before installing anything</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority xdpyinfo | head -n 12</pre></div>
+      <div class="expect"><b>Expected</b>A block starting with <code>name of display:  :1</code> and a <code>dimensions:</code> line such as <code>1920x1080 pixels</code>. If instead you see <code>unable to open display</code>, your display or auth path is wrong — go back to 4b/4d. Missing <code>xdpyinfo</code>? Install it with <code>sudo apt install -y --no-install-recommends x11-utils</code>.</div>
+    </article>
+
+    <!-- STEP 5 -->
+    <article class="step">
+      <span class="ghost">05</span>
+      <div class="step-head"><span class="tag">00 — 5 &nbsp;&nbsp; Step</span><h3>Install x11vnc without disturbing the Jetson stack</h3></div>
+      <p>x11vnc is a small package (a few hundred KB plus a couple of libraries). Install it narrowly, and work around the stale cuDNN repository instead of "fixing" NVIDIA sources.</p>
+
+      <h4>5a · Maybe it is already there</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>which x11vnc && x11vnc -version</pre></div>
+      <div class="note">If it prints a path and a version like <code>x11vnc: 0.9.16</code>, skip to Step 06.</div>
+
+      <h4>5b · Refresh package lists, tolerating the broken local cuDNN repo</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo apt-get update -o Dir::Etc::sourceparts="-" \
+  -o APT::Get::List-Cleanup="0" \
+  -o Dir::Etc::sourcelist="/etc/apt/sources.list" || true</pre></div>
+      <div class="note">This refreshes only the main Ubuntu list and ignores <code>/etc/apt/sources.list.d/</code>, so the missing <code>file:/var/cudnn-local-tegra-repo-ubuntu2004-8.6.0.166 Release</code> cannot abort the run. Nothing NVIDIA-related is modified or removed.</div>
+
+      <h4>5c · Install, minimally</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo apt-get install -y --no-install-recommends x11vnc</pre></div>
+
+      <h4>5d · Verify and reclaim cache space</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>x11vnc -version
+sudo apt-get clean
+df -h /</pre></div>
+      <div class="expect"><b>Expected</b>A version string, and free space on <code>/</code> unchanged or better than before.</div>
+    </article>
+
+    <!-- STEP 6 -->
+    <article class="step">
+      <span class="ghost">06</span>
+      <div class="step-head"><span class="tag">00 — 6 &nbsp;&nbsp; Step</span><h3>Create the VNC password file</h3></div>
+      <p>Tailscale already authenticates the device. The VNC password is the second lock — it stops anything else on the tailnet, or a stray process on the Jetson, from grabbing your desktop.</p>
+
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo mkdir -p /etc/x11vnc
+sudo x11vnc -storepasswd /etc/x11vnc/vncpasswd</pre></div>
+      <p>It prompts twice for a password, then asks <em>Write password to /etc/x11vnc/vncpasswd?</em> — answer <code>y</code>. VNC passwords are truncated to 8 characters, so use 8 strong characters and treat the tailnet as the real perimeter.</p>
+
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo chown root:root /etc/x11vnc/vncpasswd
+sudo chmod 600 /etc/x11vnc/vncpasswd
+sudo ls -l /etc/x11vnc/vncpasswd</pre></div>
+      <div class="expect"><b>Expected</b><code>-rw------- 1 root root 8 ... /etc/x11vnc/vncpasswd</code></div>
+    </article>
+
+    <!-- STEP 7 -->
+    <article class="step">
+      <span class="ghost">07</span>
+      <div class="step-head"><span class="tag">00 — 7 &nbsp;&nbsp; Step</span><h3>Run x11vnc manually, bound to Tailscale only</h3></div>
+      <p>Manual first, service later. This proves the display, the auth file, the password and the network path all agree — while you can still read the log live.</p>
+
+      <h4>7a · Confirm the Tailscale interface address to bind to</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>ip -4 addr show tailscale0 | grep inet
+tailscale ip -4</pre></div>
+
+      <h4>7b · Start it in the foreground</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo x11vnc \
+  -display :1 \
+  -auth /run/user/1000/gdm/Xauthority \
+  -rfbauth /etc/x11vnc/vncpasswd \
+  -listen 100.122.162.74 \
+  -rfbport 5900 \
+  -shared -forever -repeat -noxdamage -xkb \
+  -o /tmp/x11vnc.log -verbose</pre></div>
+      <div class="expect"><b>Expected</b>The log ends with lines similar to
+<code>The VNC desktop is: 100.122.162.74:0</code> and
+<code>PORT=5900</code>, then sits there waiting. Leave this terminal open.</div>
+      <div class="note">Flag reasons: <code>-shared</code> lets more than one viewer attach · <code>-forever</code> keeps serving after a viewer disconnects · <code>-repeat</code> makes held keys repeat normally · <code>-noxdamage</code> avoids a common Jetson/compositor artefact class · <code>-xkb</code> fixes modifier keys for non-US layouts · <code>-listen</code> is the security-critical one: the socket only exists on the Tailscale address, never on college Ethernet.</div>
+
+      <h4>7c · From a second SSH window, confirm the bind is Tailscale-only</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · second SSH window</span><button class="copy">Copy</button></div><pre>sudo ss -tlnp | grep 5900</pre></div>
+      <div class="expect"><b>Expected</b><code>LISTEN 0 32 100.122.162.74:5900</code> — and crucially <em>not</em> <code>0.0.0.0:5900</code> and not <code>172.16.97.203:5900</code>.</div>
+    </article>
+
+    <!-- STEP 8 / CLIENTS -->
+    <article class="step" id="clients">
+      <span class="ghost">08</span>
+      <div class="step-head"><span class="tag">00 — 8 &nbsp;&nbsp; Step</span><h3>Connect a VNC viewer from your laptop</h3></div>
+      <p>Address in every case: <code>100.122.162.74:5900</code> (some clients want <code>100.122.162.74::5900</code>, some just want the bare IP because 5900 is display <code>:0</code>). Choose your OS.</p>
+
+      <div data-tabs>
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-target="mac" aria-selected="true">macOS</button>
+          <button class="tab" role="tab" data-target="win" aria-selected="false">Windows</button>
+          <button class="tab" role="tab" data-target="ubu" aria-selected="false">Ubuntu / Linux</button>
+        </div>
+
+        <div class="tabpanel" data-panel="mac">
+          <h4>Option A — built-in Screen Sharing (nothing to install)</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · macOS Terminal</span><button class="copy">Copy</button></div><pre>open vnc://100.122.162.74:5900</pre></div>
+          <p>Enter the 8-character VNC password when asked. The Apple client is convenient but limited on encodings.</p>
+          <h4>Option B — RealVNC Viewer (better compression, recommended)</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · macOS Terminal</span><button class="copy">Copy</button></div><pre>brew install --cask vnc-viewer</pre></div>
+          <p>Open VNC Viewer → new connection → <code>100.122.162.74:5900</code> → set <em>Picture quality: Medium</em>.</p>
+          <h4>Option C — TigerVNC via Homebrew (most tunable)</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · macOS Terminal</span><button class="copy">Copy</button></div><pre>brew install tiger-vnc
+vncviewer -PreferredEncoding=Tight -CompressLevel=6 -QualityLevel=5 100.122.162.74:5900</pre></div>
+        </div>
+
+        <div class="tabpanel" data-panel="win" hidden>
+          <h4>Option A — RealVNC Viewer</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell</span><button class="copy">Copy</button></div><pre>winget install --id RealVNC.VNCViewer -e</pre></div>
+          <p>Launch it, type <code>100.122.162.74:5900</code> in the address bar, press Enter, enter the VNC password.</p>
+          <h4>Option B — TigerVNC (portable, scriptable)</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell</span><button class="copy">Copy</button></div><pre>winget install --id TigerVNC.TigerVNC -e
+vncviewer.exe 100.122.162.74:5900</pre></div>
+          <h4>Option C — TightVNC viewer only (skip the server component in the installer)</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell</span><button class="copy">Copy</button></div><pre>winget install --id GlavSoft.TightVNC -e</pre></div>
+          <div class="note">Windows Defender Firewall does not need any inbound rule — you are the one making the outbound connection through Tailscale.</div>
+        </div>
+
+        <div class="tabpanel" data-panel="ubu" hidden>
+          <h4>Option A — Remmina (nice GUI, remembers profiles)</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · Ubuntu terminal</span><button class="copy">Copy</button></div><pre>sudo apt update
+sudo apt install -y remmina remmina-plugin-vnc
+remmina</pre></div>
+          <p>New connection → Protocol <em>VNC</em> → Server <code>100.122.162.74:5900</code> → Quality <em>Medium</em>.</p>
+          <h4>Option B — TigerVNC from the terminal</h4>
+          <div class="code"><div class="code-top"><span class="where">Client · Ubuntu terminal</span><button class="copy">Copy</button></div><pre>sudo apt install -y tigervnc-viewer
+vncviewer -PreferredEncoding=Tight -CompressLevel=6 -QualityLevel=5 100.122.162.74:5900</pre></div>
+        </div>
+      </div>
+
+      <div class="expect"><b>Expected</b>The <em>exact same</em> GNOME desktop that a monitor plugged into the Jetson would show — same open windows, same wallpaper. Move the mouse, type in a terminal, open Files. Input is injected straight into the live session.</div>
+
+      <h4>Extra-paranoid alternative — SSH tunnel instead of a VNC listener</h4>
+      <p>If you prefer x11vnc to listen only on localhost and never on any network interface, run it with <code>-localhost</code> and forward the port over SSH:</p>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority \
+  -rfbauth /etc/x11vnc/vncpasswd -localhost -rfbport 5900 \
+  -shared -forever -noxdamage -xkb -o /tmp/x11vnc.log</pre></div>
+      <div class="code"><div class="code-top"><span class="where">Client · macOS / Ubuntu</span><button class="copy">Copy</button></div><pre>ssh -N -L 5901:localhost:5900 xavier</pre></div>
+      <div class="code"><div class="code-top"><span class="where">Client · Windows PowerShell</span><button class="copy">Copy</button></div><pre>ssh -N -L 5901:localhost:5900 xavier</pre></div>
+      <p>Then point the viewer at <code>localhost:5901</code>. Two encrypted layers, zero listening sockets on the tailnet.</p>
+    </article>
+
+    <!-- STEP 9 -->
+    <article class="step">
+      <span class="ghost">09</span>
+      <div class="step-head"><span class="tag">00 — 9 &nbsp;&nbsp; Step</span><h3>Lock the door: firewall + Tailscale-only access</h3></div>
+      <p>The <code>-listen</code> flag already keeps 5900 off the college LAN. A firewall makes that guarantee independent of a typo in a service file later.</p>
+
+      <h4>9a · Enable ufw with a Tailscale-friendly policy</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo apt-get install -y --no-install-recommends ufw
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow in on tailscale0
+sudo ufw allow 41641/udp comment 'tailscale direct'
+sudo ufw allow from 172.16.0.0/12 to any port 22 proto tcp comment 'campus LAN ssh rescue'</pre></div>
+      <div class="note warn">Keep that last rule (or add your own LAN range) before enabling ufw, otherwise a Tailscale outage plus a closed LAN port 22 means a keyboard-and-monitor trip to the Jetson.</div>
+
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo ufw --force enable
+sudo ufw status verbose</pre></div>
+
+      <h4>9b · Explicitly deny VNC from anywhere except the tailnet</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo ufw deny in on eth0 to any port 5900 proto tcp
+sudo ufw status numbered</pre></div>
+      <div class="note">Check your wired interface name first with <code>ip -br link</code> — on Jetson it is often <code>eth0</code>, but <code>enP...</code> names also occur. Docker rules are untouched: ufw does not manage the <code>DOCKER</code> iptables chains, so containers and ROS 2 DDS traffic on <code>docker0</code> keep working.</div>
+
+      <h4>9c · Confirm nothing broke</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>tailscale status | head -n 3
+sudo docker ps
+ping -c 2 google.com</pre></div>
+    </article>
+
+    <!-- STEP 10 -->
+    <article class="step">
+      <span class="ghost">10</span>
+      <div class="step-head"><span class="tag">00 — 10 &nbsp;&nbsp; Step</span><h3>Make it survive reboots with systemd</h3></div>
+      <p>Only now, with the manual run confirmed, write the unit. It waits for the graphical target and Tailscale, restarts forever, and uses the discovered display and auth path — no guesses.</p>
+
+      <h4>10a · Write the unit file</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo tee /etc/systemd/system/x11vnc.service > /dev/null <<'EOF'
+[Unit]
+Description=x11vnc sharing the existing X11 desktop (Tailscale only)
+After=graphical.target tailscaled.service network-online.target
+Wants=graphical.target tailscaled.service
+
+[Service]
+Type=simple
+# Wait until the X display, its auth file and the Tailscale address all exist.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do [ -e /tmp/.X11-unix/X1 ] && [ -e /run/user/1000/gdm/Xauthority ] && /usr/bin/tailscale ip -4 >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
+ExecStart=/bin/bash -c '/usr/bin/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority -rfbauth /etc/x11vnc/vncpasswd -listen $(/usr/bin/tailscale ip -4) -rfbport 5900 -shared -forever -repeat -noxdamage -xkb -o /var/log/x11vnc.log'
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF</pre></div>
+      <div class="note warn">Edit <code>:1</code>, <code>/tmp/.X11-unix/X1</code> and the Xauthority path to match <em>your</em> Step 04 findings before enabling. <code>X1</code> pairs with display <code>:1</code>; display <code>:0</code> pairs with <code>X0</code>.</div>
+
+      <h4>10b · Enable and start</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo systemctl daemon-reload
+sudo systemctl enable x11vnc.service
+sudo systemctl restart x11vnc.service
+systemctl status x11vnc.service --no-pager</pre></div>
+      <div class="expect"><b>Expected</b><code>Active: active (running)</code> with no restart loop. Then <code>sudo ss -tlnp | grep 5900</code> shows the Tailscale address again.</div>
+
+      <h4>10c · Watch the logs when anything looks odd</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>journalctl -u x11vnc.service -n 60 --no-pager
+sudo tail -n 40 /var/log/x11vnc.log</pre></div>
+
+      <h4>10d · Keep the log from eating the eMMC</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo tee /etc/logrotate.d/x11vnc > /dev/null <<'EOF'
+/var/log/x11vnc.log {
+    weekly
+    rotate 2
+    size 5M
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF</pre></div>
+    </article>
+
+    <!-- STEP 11 -->
+    <article class="step">
+      <span class="ghost">11</span>
+      <div class="step-head"><span class="tag">00 — 11 &nbsp;&nbsp; Step</span><h3>Final acceptance tests (and the Foxy cleanup)</h3></div>
+      <p>Run the full matrix once. From then on you can trust the setup unattended.</p>
+
+      <h4>11a · Reboot and reconnect blind</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>sudo reboot</pre></div>
+      <div class="code"><div class="code-top"><span class="where">Client · wait ~60 s, then</span><button class="copy">Copy</button></div><pre>tailscale ping 100.122.162.74
+ssh xavier "systemctl is-active x11vnc; tailscale ip -4; uptime"</pre></div>
+
+      <h4>11b · Test both doors at once</h4>
+      <div class="code"><div class="code-top"><span class="where">Client · any OS</span><button class="copy">Copy</button></div><pre>ssh xavier "DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority gnome-terminal" &
+open vnc://100.122.162.74:5900</pre></div>
+      <p>A terminal window launched over SSH should appear inside the VNC view — that is proof the two layers address the same live session.</p>
+
+      <h4>11c · Robotics sanity check (nothing was disturbed)</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>nvidia-smi 2>/dev/null || tegrastats --interval 1000 | head -n 3
+sudo docker images | grep rover-ros2
+sudo docker run --rm -it --network host -e ROS_DOMAIN_ID=42 rover-ros2:humble bash -lc 'ros2 topic list'</pre></div>
+
+      <h4>11d · Move the Jetson to its permanent Ethernet port</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · after the move</span><button class="copy">Copy</button></div><pre>hostname -I
+tailscale status</pre></div>
+      <div class="note">The LAN IP will likely change. The <code>100.122.162.74</code> address does not, so <code>ssh xavier</code> and the VNC bookmark keep working with zero edits. If the service was started before Tailscale finished coming up, <code>sudo systemctl restart x11vnc</code> re-binds it.</div>
+
+      <h4>11e · Optional — silence the old ROS Foxy line</h4>
+      <div class="code"><div class="code-top"><span class="where">Xavier · over SSH</span><button class="copy">Copy</button></div><pre>cp ~/.bashrc ~/.bashrc.bak.$(date +%F)
+grep -n 'foxy' ~/.bashrc
+sed -i 's|^\(source /opt/ros/foxy/setup.bash\)|[ -f /opt/ros/foxy/setup.bash ] \&\& \1|' ~/.bashrc
+bash -lc 'echo ok'</pre></div>
+      <div class="note">This makes the line conditional instead of deleting it, and keeps a dated backup. Your ROS 2 Humble Docker workflow is untouched.</div>
+    </article>
+  </div>
+</section>
+
+<!-- ============ PERFORMANCE ============ -->
+<section id="perf">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="micro">Tuning</div>
+        <h2>Make the desktop feel usable on cellular.</h2>
+        <p>An embedded board, a college uplink and a 4G hotspot are three bottlenecks in a row. Trade pixels for responsiveness.</p>
+      </div>
+    </div>
+
+    <div class="grid g3">
+      <div class="card"><div class="num">P1</div><h3>Drop the resolution</h3><p>Fewer pixels beats better compression. On the Jetson: <code>DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority xrandr -s 1280x720</code></p></div>
+      <div class="card"><div class="num">P2</div><h3>Tight encoding, medium quality</h3><p>In the viewer choose Tight/ZRLE with quality ~5 and compression ~6. TigerVNC: <code>-PreferredEncoding=Tight -CompressLevel=6 -QualityLevel=5</code></p></div>
+      <div class="card"><div class="num">P3</div><h3>Server-side thinning</h3><p>Add <code>-ncache 10 -wireframe -speeds modem -defer 20 -wait 20</code> to x11vnc for far fewer updates on a slow link.</p></div>
+      <div class="card"><div class="num">P4</div><h3>Kill desktop animation</h3><p><code>gsettings set org.gnome.desktop.interface enable-animations false</code> and use a solid-colour wallpaper. Big win.</p></div>
+      <div class="card"><div class="num">P5</div><h3>Keep the Jetson at full clocks</h3><p><code>sudo nvpmodel -q</code> then <code>sudo jetson_clocks</code> if the board is throttling while you drive the GUI.</p></div>
+      <div class="card"><div class="num">P6</div><h3>Do not stream Gazebo casually</h3><p>RViz2 with few displays is fine. Gazebo over 4G will crawl — run headless simulation and inspect data over SSH instead.</p></div>
+    </div>
+
+    <figure class="photo" style="margin-top:22px">
+      <img loading="lazy" src="../images/rover.jpg" alt="Rover robot chassis with depth camera and LiDAR on a workbench in a robotics lab" width="1280" height="864" />
+      <div class="cap micro">The reason all of this exists — RealSense D435, TF02-Pro LiDAR, BTS7960 drivers, ROS 2 Humble in Docker.</div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TROUBLESHOOTING ============ -->
+<section id="trouble">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="micro">Troubleshooting</div>
+        <h2>Every failure I hit, and the fix.</h2>
+        <p>Click a symptom. Diagnosis first, then the copy-paste remedy.</p>
+      </div>
+    </div>
+
+    <details class="tr">
+      <summary><span class="sym">T1</span><span><strong>ssh: connect to host 100.122.162.74 port 22: Operation timed out</strong><span class="hint">The tailnet path is down, not SSH.</span></span></summary>
+      <div class="body">
+        <p>Test the road before the door. On the laptop:</p>
+        <div class="code"><div class="code-top"><span class="where">Client</span><button class="copy">Copy</button></div><pre>tailscale status
+tailscale ping 100.122.162.74
+tailscale netcheck</pre></div>
+        <p>If the Jetson shows <code>offline</code>, it lost Internet or tailscaled stopped. On the Jetson (physically or over LAN):</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>sudo systemctl status tailscaled --no-pager
+sudo systemctl restart tailscaled
+sudo tailscale up
+ping -c 3 1.1.1.1</pre></div>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T2</span><span><strong>Tailscale worked on college Wi-Fi but not on the phone hotspot</strong><span class="hint">Carrier CGNAT blocks direct paths; relays should still work.</span></span></summary>
+      <div class="body">
+        <p>Expected and harmless — traffic falls back to a DERP relay, adding latency but staying functional.</p>
+        <div class="code"><div class="code-top"><span class="where">Client</span><button class="copy">Copy</button></div><pre>tailscale netcheck
+tailscale ping --verbose 100.122.162.74</pre></div>
+        <p>Seeing <code>via DERP(...)</code> is fine. Blocked entirely? Toggle airplane mode, disable any VPN or private-relay feature on the phone, and confirm UDP 41641 is not being filtered.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T3</span><span><strong>The Jetson's college LAN IP changed and I panicked</strong><span class="hint">It does not matter. That is the whole point.</span></span></summary>
+      <div class="body">
+        <p>Never store the <code>172.16.x.x</code> address anywhere. Confirm the Tailscale identity instead:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>hostname -I
+tailscale ip -4
+sudo systemctl restart x11vnc</pre></div>
+        <p>The restart re-runs the <code>-listen $(tailscale ip -4)</code> substitution against the current interface state.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T4</span><span><strong>Permission denied (publickey,password)</strong><span class="hint">Right host, wrong credential.</span></span></summary>
+      <div class="body">
+        <div class="code"><div class="code-top"><span class="where">Client</span><button class="copy">Copy</button></div><pre>ssh -v xavier-nx@100.122.162.74 2>&1 | tail -n 25</pre></div>
+        <p>Verify the username is exactly <code>xavier-nx</code>, and repair permissions on the Jetson — SSH silently rejects loose modes:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; ls -la ~/.ssh
+sudo journalctl -u ssh -n 30 --no-pager</pre></div>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T5</span><span><strong>x11vnc: XOpenDisplay failed / unable to open display ":0"</strong><span class="hint">Wrong display, or the auth cookie is not readable.</span></span></summary>
+      <div class="body">
+        <p>Do not try other numbers at random. Re-derive both values from the live session:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>ls /tmp/.X11-unix/
+PID=$(pgrep -u xavier-nx -f 'gnome-shell$' | head -n1)
+sudo tr '\0' '\n' < /proc/$PID/environ | grep -E '^(DISPLAY|XAUTHORITY)='
+ps -eo pid,user,args | grep '[X]org'</pre></div>
+        <p>Then re-test with <code>xdpyinfo</code> before starting x11vnc again. Also make sure you are running x11vnc with <code>sudo</code> — the auth file under <code>/run/user/1000/gdm/</code> is not world-readable.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T6</span><span><strong>I connected but I only see the GDM login screen, not my desktop</strong><span class="hint">You attached to the greeter's X server.</span></span></summary>
+      <div class="body">
+        <p>The greeter runs as uid 124 with <code>/run/user/124/gdm/Xauthority</code>. You want the uid 1000 session. Either log in once on the physical monitor so the user session exists, or enable auto-login so the desktop is present after every unattended reboot:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>sudo cp /etc/gdm3/custom.conf /etc/gdm3/custom.conf.bak
+sudo sed -i 's/^#\?\s*AutomaticLoginEnable.*/AutomaticLoginEnable=true/; s/^#\?\s*AutomaticLogin\s*=.*/AutomaticLogin=xavier-nx/' /etc/gdm3/custom.conf
+grep -A3 '\[daemon\]' /etc/gdm3/custom.conf
+sudo systemctl restart gdm3</pre></div>
+        <div class="note warn" style="color:var(--fg-dim);border-color:var(--warn)">Auto-login means anyone with physical access to the board gets a logged-in desktop. On a shared lab bench, weigh that against the convenience.</div>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T7</span><span><strong>Black screen, or the desktop freezes after the monitor is unplugged</strong><span class="hint">No monitor means no display modes.</span></span></summary>
+      <div class="body">
+        <p>Headless Jetsons can drop to a tiny or blank framebuffer. Cheapest fix is a dummy HDMI plug. Software alternative — force a mode:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>export DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority
+xrandr
+xrandr --output HDMI-0 --mode 1280x720 || xrandr -s 1280x720</pre></div>
+        <p>Also check that <code>gnome-shell</code> is still alive: <code>pgrep -a gnome-shell</code>. If it died, <code>sudo systemctl restart gdm3</code> (this closes GUI apps but never touches Docker or ROS).</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T8</span><span><strong>Viewer says "connection refused" but SSH works fine</strong><span class="hint">Nothing is listening, or it listens on the wrong address.</span></span></summary>
+      <div class="body">
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>systemctl is-active x11vnc
+sudo ss -tlnp | grep 5900
+sudo tail -n 30 /var/log/x11vnc.log
+sudo ufw status verbose</pre></div>
+        <p>Bound to <code>127.0.0.1</code> only? You used <code>-localhost</code> — either drop it or use the SSH tunnel from Step 08. No socket at all? The service died; read <code>journalctl -u x11vnc -n 50 --no-pager</code>.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T9</span><span><strong>Authentication failed in the VNC viewer</strong><span class="hint">Password file path, ownership, or the 8-character truncation.</span></span></summary>
+      <div class="body">
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>sudo ls -l /etc/x11vnc/vncpasswd
+sudo x11vnc -storepasswd /etc/x11vnc/vncpasswd
+sudo systemctl restart x11vnc</pre></div>
+        <p>Remember VNC keeps only the first 8 characters — a longer passphrase silently becomes its prefix, which is a classic "it worked yesterday" trap when you type it in full somewhere else.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T10</span><span><strong>apt update fails: cudnn-local-tegra-repo ... no longer has a Release file</strong><span class="hint">Stale local repo. Work around it; do not reinstall CUDA.</span></span></summary>
+      <div class="body">
+        <p>Safest — restrict the update to the main list (used in Step 05):</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>sudo apt-get update -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" \
+  -o Dir::Etc::sourcelist="/etc/apt/sources.list"</pre></div>
+        <p>If you want it permanently quiet, disable only that one file with a dated backup — never delete NVIDIA repos:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>ls /etc/apt/sources.list.d/ | grep -i cudnn
+sudo cp /etc/apt/sources.list.d/cudnn-local-tegra-*.list /root/cudnn-repo.list.bak
+sudo mv /etc/apt/sources.list.d/cudnn-local-tegra-*.list /etc/apt/sources.list.d/cudnn-local-tegra.list.disabled
+sudo apt-get update</pre></div>
+        <p>Nothing is uninstalled: the already-installed cuDNN libraries stay exactly where they are.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T11</span><span><strong>No space left on device during install</strong><span class="hint">2 GB on eMMC disappears fast.</span></span></summary>
+      <div class="body">
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>df -h /
+sudo apt-get clean
+sudo journalctl --vacuum-size=100M
+sudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -n 12
+sudo docker system df</pre></div>
+        <p>Reclaim from Docker deliberately, never with a blind prune: <code>sudo docker image ls</code>, remove only images you can rebuild, and keep large datasets on <code>/mnt/ssd</code>.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T12</span><span><strong>Keyboard types wrong characters, or modifier keys stick</strong><span class="hint">XKB mapping mismatch between viewer and server.</span></span></summary>
+      <div class="body">
+        <p>Ensure x11vnc runs with <code>-xkb -repeat</code> (both are in the Step 07 command). Then align layouts:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>export DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority
+setxkbmap -query
+setxkbmap us</pre></div>
+        <p>On macOS viewers, disable any "send Option as Alt" remapping if Alt-based shortcuts misfire.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T13</span><span><strong>Everything is extremely laggy over 4G</strong><span class="hint">Bandwidth and latency, not a broken setup.</span></span></summary>
+      <div class="body">
+        <p>Apply the Performance section, then restart x11vnc with slow-link flags:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>sudo systemctl stop x11vnc
+sudo x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority \
+  -rfbauth /etc/x11vnc/vncpasswd -listen $(tailscale ip -4) -rfbport 5900 \
+  -shared -forever -repeat -noxdamage -xkb \
+  -ncache 10 -wireframe -speeds modem -defer 25 -wait 25 -o /tmp/x11vnc.slow.log</pre></div>
+        <p>Also confirm the path is direct rather than relayed: <code>tailscale ping --verbose 100.122.162.74</code>.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T14</span><span><strong>The x11vnc service restart-loops after reboot</strong><span class="hint">It started before the X session existed.</span></span></summary>
+      <div class="body">
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>journalctl -u x11vnc -b --no-pager | tail -n 40
+ls -la /tmp/.X11-unix/
+sudo ls -la /run/user/1000/gdm/</pre></div>
+        <p>Confirm the socket name in <code>ExecStartPre</code> matches your display (<code>X0</code> ↔ <code>:0</code>, <code>X1</code> ↔ <code>:1</code>). If the desktop only appears after a manual login, enable auto-login (T6). Raise the wait loop from 60 to 120 iterations on slow boots, then <code>sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart x11vnc</code>.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T15</span><span><strong>Did I break ROS 2, Docker, CUDA or the cameras?</strong><span class="hint">Verify instead of worrying.</span></span></summary>
+      <div class="body">
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>sudo docker ps -a | head
+sudo docker run --rm -it --network host -e ROS_DOMAIN_ID=42 rover-ros2:humble bash -lc 'ros2 doctor --report | head -n 20'
+ls /dev/video* ; lsusb | grep -i intel
+tegrastats --interval 1000 | head -n 3</pre></div>
+        <p>This guide installed only <code>x11vnc</code> (plus optionally <code>ufw</code> and <code>x11-utils</code>) and added one systemd unit. Nothing in the JetPack, CUDA, cuDNN or ROS chain is modified.</p>
+      </div>
+    </details>
+
+    <details class="tr">
+      <summary><span class="sym">T16</span><span><strong>Should I just use NoMachine instead?</strong><span class="hint">No — and the ARM download 404 was not your mistake.</span></span></summary>
+      <div class="body">
+        <p>The old <code>https://www.nomachine.com/free/arm/64/deb</code> path returns 404 and leaves a zero-byte file, which is why <code>dpkg -i</code> reported "not a Debian format archive". Clean it up and move on:</p>
+        <div class="code"><div class="code-top"><span class="where">Xavier</span><button class="copy">Copy</button></div><pre>rm -f ~/Downloads/nomachine_arm64.deb
+ls -la ~/Downloads/ | head</pre></div>
+        <p>x11vnc + Tailscale is free, open source, shares the <em>existing</em> session rather than a second virtual one, and adds no proprietary daemon to a robotics machine.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- ============ CHECKLIST ============ -->
+<section id="checklist">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="micro">Acceptance</div>
+        <h2>Tick these and you are done.</h2>
+        <p>Progress is saved in your browser, so you can close the tab mid-setup.</p>
+      </div>
+    </div>
+    <ul class="check">
+      <li><input type="checkbox" id="c1" /><label for="c1">SSH reaches the Jetson over Tailscale from the same network</label></li>
+      <li><input type="checkbox" id="c2" /><label for="c2">SSH reaches it from the phone hotspot, Jetson still on college Ethernet</label></li>
+      <li><input type="checkbox" id="c3" /><label for="c3">Real DISPLAY and XAUTHORITY discovered and confirmed with <code>xdpyinfo</code></label></li>
+      <li><input type="checkbox" id="c4" /><label for="c4">x11vnc installed with <code>--no-install-recommends</code>, disk still healthy</label></li>
+      <li><input type="checkbox" id="c5" /><label for="c5">VNC password stored at <code>/etc/x11vnc/vncpasswd</code>, mode 600</label></li>
+      <li><input type="checkbox" id="c6" /><label for="c6">Manual x11vnc run listens only on the <code>100.x</code> Tailscale address</label></li>
+      <li><input type="checkbox" id="c7" /><label for="c7">Viewer shows the existing GNOME desktop; mouse and keyboard work</label></li>
+      <li><input type="checkbox" id="c8" /><label for="c8">ufw enabled, tailscale0 allowed, 5900 denied on the wired interface</label></li>
+      <li><input type="checkbox" id="c9" /><label for="c9">systemd unit enabled and surviving a reboot without a restart loop</label></li>
+      <li><input type="checkbox" id="c10" /><label for="c10">Docker, ROS 2 Humble, GPU and sensors all verified intact</label></li>
+      <li><input type="checkbox" id="c11" /><label for="c11">Jetson moved to its permanent port; access unchanged after the LAN IP changed</label></li>
+      <li><input type="checkbox" id="c12" /><label for="c12">Full hostel run: phone hotspot → Tailscale → SSH + desktop</label></li>
+    </ul>
+  </div>
+</section>
+</main>
+
+<!-- ============ FOOTER ============ -->
+<footer>
+  <div class="wrap">
+    <div class="micro">Written, tested and maintained by</div>
+    <h2 class="big">Om Rashiya</h2>
+    <p style="color:var(--fg-dim);max-width:58ch;margin-top:-10px">
+      Robotics and systems engineering — rovers, ROS 2, Jetson-class compute, and the unglamorous
+      infrastructure that keeps hardware reachable at 2 a.m. from a hostel room.
+    </p>
+    <div class="links" style="margin-top:26px">
+      <a href="https://www.linkedin.com/in/om-rashiya-b25068378/" target="_blank" rel="noopener">LinkedIn → om-rashiya</a>
+      <a href="https://github.com/rashiyaom" target="_blank" rel="noopener">GitHub → rashiyaom</a>
+      <a href="http://rashiyaom.netlify.app" target="_blank" rel="noopener">Portfolio → rashiyaom.netlify.app</a>
+    </div>
+    <div class="foot-meta">
+      <div class="micro">© <span id="year">2026</span> Om Rashiya · x11vnc + Tailscale field guide</div>
+      <div class="micro">Free &amp; open source only · no NoMachine · no public port forwarding</div>
+      <div class="micro"><a href="#top" style="text-decoration:none">Back to top ↗</a></div>
+    </div>
+  </div>
+</footer>
+
+<script src="./script.js"></script>
+</body>
+</html>
